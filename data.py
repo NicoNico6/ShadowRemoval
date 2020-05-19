@@ -55,14 +55,15 @@ class DatasetFromFolder(data.Dataset):
         for root, dirs, files in os.walk(data_dir):
           names.append(files)
           roots.append(root)
+        #print(roots[1:])
         for name in names[-1]:
           if self.training:
+            clean.append(os.path.join(roots[1], name))
+            shadow.append(os.path.join(roots[2], name))
+            mask.append(os.path.join(roots[3], name))
+          else:
             mask.append(os.path.join(roots[1], name))
             shadow.append(os.path.join(roots[2], name))
-            clean.append(os.path.join(roots[3], name))
-          else:
-            shadow.append(os.path.join(roots[1], name))
-            mask.append(os.path.join(roots[2], name))
             clean.append(os.path.join(roots[3], name))
         return clean, mask, shadow
         
