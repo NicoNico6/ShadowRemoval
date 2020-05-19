@@ -315,9 +315,9 @@ class ShadowMattingNet(nn.Module):
     super(ShadowMattingNet, self).__init__()
     
     self.in_block = nn.Sequential(
-                      ConvLayer(4, channels, kernel_size = 7, stride = 1, norm = 'in', nonlinear = 'relu'),
-                      ConvLayer(channels, channels*2, kernel_size = 3, stride = 2, norm = 'in', nonlinear = 'relu'),
-                      ConvLayer(channels*2, channels*4, kernel_size = 3, stride = 2, norm = 'in', nonlinear = 'relu'),
+                      ConvLayer(4, channels, kernel_size = 7, stride = 1, norm = 'in', nonlinear = 'leakyrelu'),
+                      ConvLayer(channels, channels*2, kernel_size = 3, stride = 2, norm = 'in', nonlinear = 'leakyrelu'),
+                      ConvLayer(channels*2, channels*4, kernel_size = 3, stride = 2, norm = 'in', nonlinear = 'leakyrelu'),
                       )
     
     self.residuals = nn.ModuleList()
@@ -327,18 +327,19 @@ class ShadowMattingNet(nn.Module):
     
     self.out_block = nn.Sequential(
                       nn.Upsample(scale_factor = 2, mode = 'bilinear'),
-                      ConvLayer(channels*4, channels*2, kernel_size = 3, stride = 1, norm = 'in', nonlinear = 'relu'),
+                      ConvLayer(channels*4, channels*2, kernel_size = 3, stride = 1, norm = 'in', nonlinear = 'leakyrelu'),
                       nn.Upsample(scale_factor = 2, mode = 'bilinear'),
-                      ConvLayer(channels*2, channels, kernel_size = 3, stride = 1, norm = 'in', nonlinear = 'relu'),
-                      nn.Conv2d(in_channels = channels, out_channels = 3, kernel_size = 7, padding = 3),
+                      ConvLayer(channels*2, channels, kernel_size = 3, stride = 1, norm = 'in', nonlinear = 'leakyrelu'),
+                      nn.Conv2d(in_channels = channels, out_channels = 4, kernel_size = 7, padding = 3),
                       )
       
   def forward(self, rgb, mask):
     out = self.in_block(torch.cat((rgb, mask[:,0,:,:].unsqueeze(1)), dim = 1))
     for module in self.residuals:
       out = module(out)
-    
-    out =((self.out_block(out)).mul(rgb)).clamp(0, 1)
-    
+    out = self.out_block(out)
+    alpha = torch.sigmoid(out[:,-1,:,:].unsqueeze(1))
+    out = rgb.mul(alpha).add(out[:,:-1, :, :].mul(1 - alpha)).clamp(0, 1)
+      
     return out
     
