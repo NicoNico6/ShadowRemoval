@@ -1,0 +1,342 @@
+import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.models as models
+
+class ConvLayer(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, dilation = 1, bias = True, groups = 1, norm = 'bn', nonlinear = 'relu'):
+        super(ConvLayer, self).__init__()
+        reflection_padding = kernel_size//2
+        self.reflection_pad = nn.ReflectionPad2d(reflection_padding)
+        self.conv2d = nn.Conv2d(in_channels, out_channels, kernel_size, stride, groups = groups, bias = bias)
+        self.norm = norm
+        self.nonlinear = nonlinear
+        
+        if norm == 'bn'
+        	self.normalization = nn.BatchNorm2d(out_channels)
+        elif norm == 'in':
+        	self.normalization = nn.InstanceNorm2d(out_channels)
+        else:
+        	self.normalization = None
+        	
+        if nonlinear == 'relu':
+        	self.activation = nn.ReLU(inplace = True)
+        elif nonlinear == 'lrelu':
+        	self.activation = nn.LeakyReLU(0.2)
+        elif nonlinear == 'PReLU':
+        	self.activation = nn.PReLU()
+        else:
+          self.activation = None
+        	
+    def forward(self, x):
+        
+        out = self.reflection_pad(x)
+        out = self.conv2d(out)
+        if self.normalization is not None:
+        	out = self.instance(out)
+        
+        if self.activation is not None:
+        	out = self.activation(out)
+        
+        return out
+        
+class ResidualBlock(torch.nn.Module):
+    def __init__(self, in_channels = 64, out_channels = 64, dilation = 1, stride = 1, attention = False, nonlinear = 'PReLU'):
+        super(ResidualBlock, self).__init__()
+        
+        self.Attention = attention
+        
+        self.conv1 = ConvLayer(in_channels, in_channels, kernel_size=3, stride=stride, dilation = dilation, )
+        self.conv2 = ConvLayer(in_channels, out_channels, kernel_size=3, stride=1, dilation = 1, nonlinear = None)
+    			
+    		self.activation = nn.LeakyReLU(0.2)	
+        self.downsample = None
+        
+        if in_channels != out_channels or stride !=1:
+          self.downsample = nn.Sequential(
+                              nn.Conv2d(in_channels, out_channels, kernel_size = 1, stride = stride, padding = 0),
+                              nn.BatchNorm2d(out_channels),
+          )
+        
+        if nonlinear == 'relu':
+        	self.activation = nn.ReLU(inplace = True)
+        elif nonlinear == 'lrelu':
+        	self.activation = nn.LeakyReLU(0.2)
+        elif nonlinear == 'PReLU':
+        	self.activation = nn.PReLU()
+        else:
+          raise ValueError
+          
+        if attention:
+          self.attention = Self_attention(out_channels, k = 8, nonlinear = 'leakyrelu')
+    		else:
+    			self.attention = None
+    		
+    def forward(self, x):
+        
+        residual = x
+        if self.downsample is not None:
+          residual = self.downsample(residual)
+        out = self.conv1(x)
+        out = self.conv2(out)
+        if self.attention:
+          out = self.attention(out)
+        
+        out = self.activation(torch.add(out, residual))
+        
+        return out
+
+class Self_Attention(nn.Module):
+    def __init__(self, channels, k, nonlinear = 'relu'):
+      super(Self_Attention, self).__init__()
+      self.channels = channels
+      self.k = k
+      self.nonlinear = nonlinear
+      
+      self.linear1 = nn.Linear(channels, channels//k)
+      self.linear2 = nn.Linear(channels//k, channels)
+      self.global_pooling = nn.AdaptiveAvgPool2d((1,1))
+      
+      if nonlinear == 'relu':
+        	self.activation = nn.ReLU(inplace = True)
+        elif nonlinear == 'lrelu':
+        	self.activation = nn.LeakyReLU(0.2)
+        elif nonlinear == 'PReLU':
+        	self.activation = nn.PReLU()
+        else:
+          raise ValueError
+      
+    def attention(self, x):
+      N, C, H, W = x.size()
+      out = torch.flatten(self.global_pooling(x), 1)
+      out = self.activation(self.linear1(out))
+      out = torch.sigmoid(self.linear2(out)).view(N, C, 1, 1)
+      
+      return out.mul(x)
+      
+    def forward(self, x):
+      return self.attention(x)
+      
+class SPP(nn.Module):
+		def __init__(self, in_channels, out_channels, num_layers = 4, interpolation_type = 'biliner'):
+			super(SPP, self).__init__()
+			self.conv = nn.ModuleList()
+			self.num_levels = num_levels
+			self.interpolation_type = interpolation_type
+			
+			for _ in rnage(self.num_levels):
+				self.conv.append(ConvLayer(in_channels, in_channels, kernel_size = (1,1), stride = 1, padding = 0))
+			
+			self.fusion = ConvLayer(in_channels = (in_channels*self.num_layers+1), out_channels = out_channels, kernel_size = 3, stride = 1, padding = 1)
+			
+		def forward(self, x):
+			
+			N, C, H, W = x.size()
+			out = []
+			
+			for level in range(self.num_levels):
+				out.append(F.interpolate(self.conv[level(F.avg_pool2d(x, kernel_size = 4**(level+1), stride = 4**(level+1), padding = 4**(level+1)%2)], size = (H, W), mode = self.interpolation_type)			
+			
+			out.append(x)
+			
+			return self.fusion(torch.cat(out, dim = 1))
+
+def Aggreation(nn.Module):
+		def __init__(self, in_channels, out_channels, kernel_size = 3):
+			super(Aggreation, self).__init__()
+			self.attention = Self_Attention(in_channels, k = 8, nonlinear = 'leakyrelu')
+			self.conv = nn.Sequential(
+										nn.Conv2d(in_channels, out_channels, kernel_size = 3, stride = 1, padding = 1),
+										nn.BatchNorm2d(out_channels),
+										nn.LeakyReLU(0.2)
+										)
+		def forward(self, x):
+			
+			return self.conv(self.attention(x))
+			
+
+class Backbone(nn.Module):
+		def __init__(self, backbones = 'vgg19'):
+			super(Backbone, self).__init__()
+			self.size = size
+			if backbones = 'vgg16':
+				modules = (models.vgg16(pretrained = True).features[:-1])
+    
+    		self.block1 = modules[0:4]
+    		self.block2 = modules[4:9]
+    		self.block3 = modules[9:16]
+    		self.block4 = modules[16:23]
+    		self.block5 = modules[23:]
+      
+    		for param in self.parameters():
+            param.requires_grad = False
+			
+			else:
+				raise ValueError
+				
+		def forward(self, x):
+				N, C, H, W = x.size()
+				
+				out = []
+				
+				out.append(self.block1(x))
+				out.append(self.block2(out[-1]))
+				out.append(self.block3(out[-1]))
+				out.append(self.block4(out[-1]))
+				out.append(self.block5(out[-1]))
+				
+				return torch.cat([F.interpolate(item, size = (H, W), mode = 'biliner') for item in out] + [x], dim = 1)
+				
+
+class ShadowRemoval(nn.Module):
+	def __init__(self, channels = 64):
+		super(ShadowRemoval):
+		
+		self.backbones = Backbone()
+		
+		self.fusion = ConvLayer(in_channels = 1472, out_channels = channels, kernel_size = 1, stride = 1, nonlinear = 'leakyrelu')
+		
+		##Stage0
+		self.block0_1 = ConvLayer(in_channels = channels, out_channels = channels, kernel_size = 1, stride = 1, norm = 'in', nonlinear = 'leakyrelu')
+		self.block0_2 = ConvLayer(in_channels = channels, out_channels = channels, kernel_size = 3, stride = 1, norm = 'in', nonlinear = 'leakyrelu')
+									
+		self.aggreation0_rgb = Aggreation(in_channels = channels*2, out_channels = channels)
+		self.aggreation0_mas = Aggreation(in_channels = channels*2, out_channels = channels)
+		
+		##Stage1
+		self.block1_1 = ConvLayer(in_channels = channels, out_channels = channels, kernel_size = 3, dilation = 2, padding = 1, norm = 'in', nonlinear = 'leakyrelu')	
+		self.block1_2 = ConvLayer(in_channels = channels, out_channels = channels, kerenl_size = 3, dilation = 4, padding = 1, norm = 'in', nonlinear = 'leakyrelu')
+		
+		self.aggreation1_rgb = Aggreation(in_channels = channels*3, out_channels = channels)
+		self.aggreation1_mask = Aggreation(in_channels = channels*3, out_channels = channels)
+		
+		##Stage2
+		self.block2_1 = ConvLayer(in_channels = channels, out_channles = channels, kernel_size = 3, dilation = 8, padding = 1, norm = 'in', nonlinear = 'leakyrelu')
+		self.block2_2 = ConvLayer(in_channels = channels, out_channles = channels, kernel_size = 3, dilation = 16, padding = 1, norm = 'in', nonlinear = 'leakyrelu')
+		
+		self.aggreation2_rgb = Aggreation(in_channels = channels*3, out_channels = channels)
+		self.aggreation2_mas = Aggreation(in_channels = channels*3, out_channels = channels)
+		
+		##Stage3
+		self.block3_1 = ConvLayer(in_channels = channels, out_channels = channels, kernel_size = 3, dilation = 32, padding = 1, norm = 'in', nonlinear = 'leakyrelu')
+		self.block3_2 = ConvLayer(in_channels = channels, out_channels = channels, kernel_size = 3, dilation = 64, padding = 1, norm = 'in', nonlinear = 'leakyrelu')
+		
+		self.aggreation3_rgb = Aggreation(in_channels = channels*4, out_channels = channels)
+		self.aggreation3_mas = Aggreation(in_channels = channels*4, out_channels = channels)	
+		
+		##Stage4
+		self.spp_img = SPP(in_channels = channels, out_channels = channels, num_layers = 4, interpolation_type = 'biliner')
+		self.spp_mas = SPP(in_channels = channels, out_channels = channels, num_layers = 4, interpolation_type = 'biliner')
+		
+		self.block4_1 = nn.Conv2d(in_channels = channels, out_channels = 3, kernel_size = 1, stride = 1, padding = 1)
+		self.block4_2 = nn.Conv2d(in_channels = channels, out_channels = 1, kernel_size = 1, stride = 1, padding = 1)
+		
+	def forward(self, x):
+		
+		out = self.fusion(self.backbone(x)
+		
+		##Stage0
+		out0_1 = self.block0_1(out)
+		out0_2 = self.block0_2(out)
+		
+		agg0_rgb = self.aggreation0_rgb(torch.cat((out0_1, out0_2), dim = 1)
+		agg0_mas = self.aggreation0_mas(torch.cat((out0_1, out0_2), dim = 1)
+		
+		out0_2 = agg0_rgb.mul(torch.sigmoid(agg0_mas))
+		
+		##Stage1
+		out1_1 = self.block1_1(out0_1)
+		out1_2 = self.block1_2(out1_1)
+		
+		agg1_rgb = self.aggreation1_rgb(torch.cat((agg0_rgb, out1_1, out1_2), dim = 1))
+		agg1_mas = self.aggreation1_mas(torch.cat((agg0_mas, out1_1, out1_2), dim = 1))
+		
+		out1_2 = agg1_rgb.mul(torch.sigmoid(agg1_mas))
+		
+		##Stage2
+		out2_1 = self.block2_1(out1_2)
+		out2_2 = self.block2_2(out2_1)
+		
+		agg2_rgb = self.aggreation2_rgb(torch.cat((agg1_rgb, out2_1, out2_2), dim = 1))
+		agg2_mas = self.aggreation2_mas(torch.cat((agg1_mas, out2_1, out2_2), dim = 1))
+		
+		out2_2 = agg2_rgb.mul(torch.sigmoid(agg2_mas))
+		
+		##Stage3
+		out3_1 = self.block3_1(out2_2)
+		out3_2 = self.block3_2(out3_1)
+		
+		agg3_rgb = self.aggreation3_rgb(torch((agg1_rgb, agg2_rgb, out3_1, out3_2), dim = 1))
+		agg3_mas = self.aggreation3_mas(torch((agg1_rgb, agg2_rgb, out3_1, out3_2), dim = 1))
+		
+		##Stage4
+		spp_rgb = self.spp_img(agg3_rgb)
+		spp_mas = self.spp_mas(agg3_mas)
+		
+		spp_rgb = spp_rgb.mul(torch.sigmoid(spp_mas))
+		
+		out_rgb = self.block4_1(spp_rgb)
+		out_mas = self.block4_2(spp_rgb)
+		
+		return out_rgb, out_mas
+		
+		
+class Discrimator(nn.Module):
+	def __init__(self, channels, depth):
+		super(Discrimator, self).__init__()
+		self.input_block = ConvLayer(in_channels = 3*2, out_channels = channels, kernel_size = 3)
+		self.residual_module = nn.ModuleList()
+		
+		for i in range(depth):
+			in_channels = channels*(2**i)
+			out_channels = channels*(2**(i+1))
+			self.residual_block.append(ResidualBlock(in_channels = in_channels, out_channels = out_channels*2, dilation = 1, stride = 2, attention = False, norm = 'bn', nonlinear = 'PReLU'))
+		
+		self.out_block = nn.Conv2d(in_channels = channels*(2**(i+1)), out_channels = 1, kernel_size = 1)	
+	
+	def foward(self, input_1, input_2):
+		"""
+		input_1: 指代生成器输入						NxCxHxW
+		input_2: 指代生成输出或者目标输出  NxCxHxW
+		out: PatchWGAN形式对输入图像某个区域进行映射关系判断
+		"""
+		input = torch.cat((input_1, input_2), dim = 1)
+		out = self.input_block(input)
+		for module in self.residual_module:
+			out = module(out)
+		
+		return self.out_block(out)
+
+class ShadowMattingNet(nn.Module):
+	def __init__(self, channels, depth = 5):
+		super(ShadowMattingNet, self).__init__()
+		
+		self.in_block = nn.Sequential(
+											ConvLayer(3, channels, kernel_size = 7, stride = 1, padding = 3, norm = 'in', nonlinear = 'leakyrelu'),
+											ConvLayer(channels, channels*2, kernel_size = 3, stride = 2, padding = 1, norm = 'in', nonlinear = 'leakyrelu'),
+											ConvLayer(channels*2, channels*4, kernel_size = 3, stride = 2, padding = 1, norm = 'in', nonlinear = 'leakyrelu'),
+											)
+		
+		self.residules = nn.ModuleList()
+		
+		for i in range(depth):
+			self.residules.append(Residule_Block(in_channels = channels*4, out_channels = channels*4, dilation = 1, stride = 1, attention = False, nonlinear = 'PReLU'))
+		
+		self.out_block = nn.Sequential(
+											ConvLayer(channels*4, channels*2, kernel_size = 3, stride = 1, padding = 3, norm = 'in', nonlinear = 'leakyrelu'),
+											nn.Upsample(scale_factor = 2, mode = 'biliner'),
+											ConvLayer(channels*2, channels, kernel_size = 3, stride = 1, padding = 1, norm = 'in', nonlinear = 'leakyrelu'),
+											nn.Upsample(scale_factor = 2, mode = 'biliner'),
+											nn.Conv2d(in_channels = channels, out_channels = 3, kernel_size = 7, padding = 3),
+											)
+			
+	def forward(self, x):
+		out = self.in_block(x)
+		for module in self.residules:
+			out = module(out)
+		
+		out = self.out_block(out)
+		
+		return out
+		
