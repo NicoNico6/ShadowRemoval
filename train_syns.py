@@ -98,8 +98,6 @@ def main():
 
     # Tag_ResidualBlocks_BatchSize
 
-    logger = SummaryWriter("/home/lthpc/gnh/ShadowRemoval/runs_ss/" + time.strftime("/%Y-%m-%d-%H/", time.localtime()))
-
     cuda = opt.cuda
 
     if cuda and not torch.cuda.is_available():
@@ -259,6 +257,8 @@ def train(training_data_loader, netG, netD, optimizerG, optimizerD, epoch):
     
     atomAge = 1.0 / len(training_data_loader)
 
+    logger = SummaryWriter("./runs_ss/" + time.strftime("/%Y-%m-%d-%H/", time.localtime()))
+
     loss_function_main = loss_function(smoothl1 = False, l1 = False, mse = True, instance_ssim = True, perceptual_loss = True)
 
     for iteration, batch in enumerate(training_data_loader, 1):
@@ -297,7 +297,7 @@ def train(training_data_loader, netG, netD, optimizerG, optimizerD, epoch):
         #c_data_predict, c_data_shadow, weight = curriculum_ssim(data_predict, data_shadow.detach(), epoch + atomAge * iteration)
         c_data_predict, c_data_shadow = data_predict, data_shadow
          
-        if iteration % 5 == 0:
+        if iteration % 2 == 0:
           for p in netD.parameters():   # reset requires_grad to True
             p.requires_grad = True    # they are set to False again in netG update.
 
@@ -368,7 +368,7 @@ def train(training_data_loader, netG, netD, optimizerG, optimizerD, epoch):
 
         if (iteration-1) % 10 == 0:
 
-            for idx, tensor in enumerate(zip(data_clean.data.cpu(), data_mask.data.cpu(), data_shadow.data.cpu(), data_predict.data.cpu().clamp(0,1))):
+            for idx, tensor in enumerate(zip(data_clean.data.cpu(), data_mask.data.cpu().expand_as(data_clean), data_shadow.data.cpu(), data_predict.data.cpu().clamp(0,1))):
 
               if idx >1:
 

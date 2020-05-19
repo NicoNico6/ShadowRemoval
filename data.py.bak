@@ -1,0 +1,113 @@
+from os import listdir
+
+from os.path import join
+
+from PIL import Image
+
+from os.path import basename
+
+import torch.utils.data as data
+
+import torchvision.transforms as transforms
+import cv2
+import random
+
+def is_image_file(filename):
+
+  filename_lower = filename.lower()
+
+  return any(filename_lower.endswith(extension) for extension in ['.png', '.jpg', '.bmp', '.mat'])
+
+class DatasetFromFolder(data.Dataset):
+
+    def __init__(self, data_dir, training = True, transform=None, experiments = "ShadowRemoval"):
+
+        super(DatasetFromFolder, self).__init__()
+
+        self.clean_filenames, self.mask_filenames, self.shadow_filenames = self.generate_filenames(data_dir) 
+
+        self.transform = transform
+
+        self.training = training
+				
+				assert experiments in ["ShadowRemoval", "ShadowSyns"]
+    		
+    		self.experiments = experiments
+		
+		def listdir(dir):
+    	names = []
+    	roots = []
+    	for root, dirs, files in os.walk(dir):
+        names.append(files)
+        roots.append(root)
+        
+    	with open("ISDT.txt", 'w') as file:
+        for name in names[-1]:
+            file.write('{} {} {} \n'.format(os.path.join(roots[1], name), os.path.join(roots[2], name), os.path.join(roots[3], name)))
+		
+		def generate_filenames(self, data_dir):
+
+        clean = []
+				mask = []
+        shadow = []
+				
+				names = []
+    	  roots = []
+    	  
+    	  for root, dirs, files in os.walk(dir):
+        	names.append(files)
+        	roots.append(root)
+        
+        for name in names[-1]:
+        	shadow.append(os.path.join(roots[1], name))
+        	mask.append(os.path.join(roots[2], name))
+        	clean.append(os.path.join(roots[3], name))
+        
+        return clean, mask, shadow
+        
+    def RandomResizedCropRotate(self, clean, mask, shadow, th, tw):
+
+        w, h = data.size
+
+        m = random.randint(0, 2)
+
+        clean, mask, shadow = clean.resize((int(w*(1 + m*0.1)),int(h*(1 + m*0.1))), Image.ANTIALIAS), mask.resize((int(w*(1 + m*0.1)),int(h*(1 + m*0.1))), Image.ANTIALIAS), shadow.resize((int(w*(1 + m*0.1)),int(h*(1 + m*0.1))), Image.ANTIALIAS)  
+
+        w, h = data.size
+
+        assert (w>=tw and h>=th), 'w:{} < tw:{} or h:{}<th:{}'.format(w,tw,h,th)
+
+        i = random.randint(0, h-th)
+
+        j = random.randint(0, w-tw)
+
+        croped_clean, croped_mask, croped_shadow = clean.crop((j, i, j+tw, i+th)), mask.crop((j, i, j+tw, i+th)), shadow.crop((j, i, j+tw, i+th)),
+
+        k = random.randint(0, 3)
+
+        return croped_clean.rotate(k*90), croped_mask.rotate(k*90), croped_shadow.rotate(k*90)
+
+    def __getitem__(self, index):
+
+        clean = Image.fromarray(cv2.cvtColor(cv2.imread(self.clean_filenames[index]), cv2.COLOR_BGR2RGB))
+				mask = Image.fromarray(cv2.cvtColor(cv2.imread(self.mask_filenames[index]), cv2.COLOR_BGR2RGB))
+        shadow = Image.fromarray(cv2.cvtColor(cv2.imread(self.shadow_filenames[index]), cv2.COLOR_BGR2RGB))
+
+        if self.transform:
+
+            if self.training:
+
+              clean, mask, shadow = (self.RandomResizedCropRotate(clean, mask, shadow, 720, 720))
+
+            clean = self.transform(clean)
+						mask = self.transform(mask)
+            shadow = self.transform(shadow)
+				
+				if self.experiments = "ShadowRemoval"
+        	return shadow, mask, clean
+        else:
+        	return clean, mask, shadow
+
+    def __len__(self):
+
+        return len(self.clean_filenames)

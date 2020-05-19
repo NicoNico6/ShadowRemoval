@@ -1,0 +1,422 @@
+#UTF-8
+import math
+import time
+import argparse
+import os
+import urllib
+import numpy as np
+from PIL import Image
+from skimage.color import rgb2yuv
+
+import torch
+import torch.nn.functional as F
+from torch import nn, optim
+from torch.backends import cudnn
+from torch.autograd import Variable
+from torch.utils.data import DataLoader
+from torchvision.transforms import Compose, ToTensor, Resize, Normalize, CenterCrop, RandomCrop
+from tensorboardX import SummaryWriter
+from torchvision.utils import make_grid
+
+from data import DatasetFromFolder
+from networks import ShadowRemoval
+from perceptual import perceptual
+from utils import save_checkpoint, calc_gradient_penalty
+
+from ssim import SSIM, CLBase
+
+# ÑµÁ·ÉèÖÃ
+parser = argparse.ArgumentParser(description="PyTorch ShadowRemoval")
+parser.add_argument("--pretrained", default="checkpoints/", help="path to folder containing the model")
+parser.add_argument("--train", default="./ISTD_dataset/train/", help="path to real train dataset")
+parser.add_argument("--train", default="./ISTD_dataset/test/", help="path to test dataset"
+parser.add_argument("--batchSize", default = 4, type = int, help="training batch")
+parser.add_argument("--save_model_freq", default=5, type=int, help="frequency to save model")
+parser.add_argument("--use_gpu", default=0, type=int, help="frequency to save model")
+parser.add_argument("--parallel", action = 'store_ture', help = "parallel training")
+parser.add_argument("--is_hyper", default=1, type=int, help="use hypercolumn or not")
+parser.add_argument("--is_training", default=1, help="training or testing")
+parser.add_argument("--continue_training", action="store_true", help="search for checkpoint in the subfolder specified by `task` argument")
+parser.add_argument("--lr_d", default = 3e-4, type = float, help="generator learning rate")
+parser.add_argument("--lr_g", default = 1e-4, type = float, help = "discrimator learning rate")
+
+
+class loss_function(nn.Module).__init__()
+	def __init__(self, smoothl1 = True, l1 = False, mse = False, instance_ssim = True, perceptual = True):
+		super(loss_function, self).__init__()
+		print("=========> Building criterion")
+		self.loss_function = nn.ModuleDict()
+		self.weight = dict()
+		
+    self.loss_function['loss_smooth_l1'] = nn.SmoothL1Loss() if smoothl1 else None
+    self.loss_function['loss_l1'] = nn.L1Loss() if l1 else None
+    self.loss_function['loss_mse'] = torch.nn.MSELoss() if mse else None
+    self.loss_function['instance_ssim'] = SSIM(reduction = 'none', window_size = 7) if instance_ssim else None
+    self.loss_function['loss_perceptual'] = perceptual() if perceptual else None
+    
+    self.weight['loss_smooth_l1'] = 1
+    self.weight['loss_l1'] = 1
+    self.weight['loss_mse'] = 1
+    self.weight['instance_ssim'] = 1
+    self.weight['loss_perceptual'] = 1
+    
+    if cuda:
+				if opt.parallel:
+					for key in self.loss_function.key():
+						if key is not None:
+							self.loss_function[key] = nn.DataParrel(self.loss_function[key], [0, 1, 2, 3]).cuda()
+        	
+				else:
+        	for key in self.loss_function.key():
+						if key is not None:
+							self.loss_function[key] = self.loss_function[key].cuda()
+        	
+    else:
+        for key in self.loss_function.key():
+						if key is not None:
+							self.loss_function[key] = self.loss_function[key].cpu()
+        	
+  
+  def forward(self, reconstructed, target):
+  		loss = 0
+  		for key in self.loss_function.key():
+  			loss += self.loss_function[key](reconstructed, target) * self.weight[key]
+  		
+  		return loss	
+  		
+def main():
+
+    global opt, name, logger, netG, netD, vgg 
+
+    opt = parser.parse_args()
+
+		name = "ShadowRemoval"
+    print(opt)
+
+    # Tag_ResidualBlocks_BatchSize
+
+    logger = SummaryWriter("/home/lthpc/gnh/hw_runs" + time.strftime("/%Y-%m-%d-%H/", time.localtime()))
+
+    cuda = opt.cuda
+
+    if cuda and not torch.cuda.is_available():
+
+        raise Exception("No GPU found, please run without --cuda")
+
+    seed = 1334
+
+    torch.manual_seed(seed)
+
+    if cuda:
+
+        torch.cuda.manual_seed(seed)
+
+    cudnn.benchmark = True
+
+    print("==========> Loading datasets")
+    train_dataset = DatasetFromFolder(
+        opt.train, 
+        transform=Compose([ToTensor()]),
+        training = True,
+        )
+		test_dataset = DatasetFromFolder(
+        opt.test, 
+        transform=Compose([ToTensor()]),
+        training = True,
+        )
+
+    train_data_loader = DataLoader(dataset=train_dataset, num_workers=4, batch_size=opt.batchSize,
+                                      pin_memory=True, shuffle=True)
+		test_data_loader = DataLoader(dataset=test_dataset, num_workers=4, batch_size=opt.batchSize,
+                                      pin_memory=True, shuffle=True)
+
+
+    print("==========> Building model")
+    netG = ShadowRemoval(channels =64)
+    netD = Discrimator(channels = 64, depth = 8)
+		
+		print("=========> Building criterion")
+    loss_smooth_l1 = nn.SmoothL1Loss()
+    loss_l1 = nn.L1Loss()
+    loss_mse = torch.nn.MSELoss()
+    instance_ssim = SSIM(reduction = 'none', window_size = 7)
+    curriculum_ssim  = CLBase()
+    loss_perceptual = perceptual() 
+     
+    # optionally copy weights from a checkpoint
+    if opt.pretrained:
+        if os.path.isfile(opt.pretrained):
+            print("=> loading model '{}'".format(opt.pretrained))
+            weights = torch.load(opt.pretrained)
+            netG.load_state_dict(weights['state_dict_g'])
+
+        else:
+            print("=> no model found at '{}'".format(opt.pretrained))
+
+    print("==========> Setting GPU")
+    if cuda:
+				if opt.parallel:
+        	netG = nn.DataParallel(netG, [0, 1, 2, 3]).cuda()
+        	netD = nn.DataParallel(netD, [0, 1, 2, 3]).cuda()
+				
+        	instance_ssim = nn.DataParallel(instance_ssim, [0, 1, 2, 3]).cuda()
+        	loss_smooth_l1 = nn.DataParallel(loss_smooth_l1, [0, 1, 2, 3]).cuda()        
+        	loss_mse = nn.DataParallel(loss_mse, [0, 1, 2, 3]).cuda()
+        	loss_l1 = nn.DataParallel(loss_l1, [0, 1, 2, 3]).cuda()
+        	curriculum_ssim = nn.DataParallel(curriculum_ssim, [0, 1, 2, 3]).cuda()
+				
+				else:
+					netG = netG.cuda()
+        	netD = netD.cuda()
+				
+        	instance_ssim = instance_ssim.cuda()
+        	loss_smooth_l1 = loss_smooth_l1.cuda()        
+        	loss_mse = loss_mse.cuda()
+        	loss_l1 = loss_l1.cuda()
+        	curriculum_ssim = curriculum_ssim.cuda()
+        	loss_perceptual = loss_perceptual.cuda()
+				
+    else:
+        netG = netG.cpu()
+        netD = netD.cpu()
+				
+        instance_ssim = instance_ssim.cpu()
+        loss_smooth_l1 = loss_smooth_l1.cpu()        
+        loss_mse = loss_mse.cpu()
+        loss_l1 = loss_l1.cpu()
+        curriculum_ssim = curriculum_ssim.cpu()
+        loss_perceptual = loss_perceptual.cpu()
+
+    print("==========> Setting Optimizer")
+    optimizerG = optim.Adam(filter(lambda p: p.requires_grad, netG.module.parameters() if parallel else netG.parameters()), lr=opt.lr_g, betas = (0.5, 0.999))
+    optimizerD = optim.Adam(filter(lambda p: p.requires_grad, netD.module.parameters() if parallel else netD.parameters()), lr = opt.lr_d, betas = (0.5, 0.999))
+
+    lr_schedulerG = optim.lr_scheduler.CosineAnnealingLR(optimizerG, opt.nEpochs, eta_min = 1e-7)
+    lr_schedulerD = optim.lr_scheduler.CosineAnnealingLR(optimizerD, opt.nEpochs, eta_min = 1e-7)
+
+   
+    print("==========> Training")
+    for epoch in range(opt.nEpochs + 1):
+
+        train(train_data_loader, netG, netD, optimizerG, optimizerD, epoch)
+				test(test_data_loader, netG)
+        
+        if epoch % opt.save_model_freq == 0:
+        	save_checkpoint(netG, epoch, name)
+					
+        lr_schedulerG.step()
+        lr_schedulerD.step()     
+    
+    
+def train(train_data_loader, netG, netD, optimizerG, optimizerD, epoch):
+
+    print("epoch =", epoch, "lr =", optimizerG.param_groups[0]["lr"])
+
+    Wasserstein_D = torch.zeros(1)
+
+    penalty_lambda = 10
+		
+		psnrs_clean = []
+		psnrs_mask = []
+		
+		ssims_clean = []
+		ssims_mask= []
+
+    atomAge = 1.0 / len(train_data_loader)
+
+    loss_function_mask = loss_function(smoothl1 = True, l1 = False, mse = False, instance_ssim = False, perceptual = False)
+		loss_function_clean = loss_function(smoothl1 = True, l1 = False, mse = False, instance_ssim = True, perceptual = True)
+
+    for iteration, batch in enumerate(train_data_loader, 1):
+
+        netG.train()
+
+        netD.train()
+
+        optimizerD.zero_grad()
+
+        steps = len(train_data_loader) * (epoch-1) + iteration
+
+        data_shadow, data_mask data_clean = \
+
+           Variable(batch[0]), \
+					 Variable(batch[1]), \
+           Variable(batch[2], requires_grad=False)
+
+        if opt.cuda:
+
+           data_clean = data_clean.cuda()
+					 data_mask = data_mask.cuda()
+           data_shadow = data_shadow.cuda()
+
+        else:
+					 data_clean = data_clean.cuda()
+					 data_mask = data_mask.cuda()
+           data_shadow = data_shadow.cuda()
+
+        ########################
+        # (1) Update D network Every Two Iteration#
+        ########################
+				
+				# train with fake
+				predict_clean, predict_mask = netG(data_shadow, dim = 1)
+          
+        if iteration % 2 == 0:
+          for p in netD.parameters():   # reset requires_grad to True
+            p.requires_grad = True    # they are set to False again in netG update.
+
+          # curriculum learning 
+          c_predict_clean, c_data_clean clean_ssim = curriculum_ssim(predict_clean, data_clean, epoch + atomAge * iteration)
+					c_predict_mask, c_data_mask, mask_ssim = curriculum_ssim(predict_mask, data_mask, epoch + atomAge * iteration)
+
+          # train with real
+          D_real = netD(torch.cat((data_shadow, c_data_mask, c_data_clean), dim=1))
+          D_fake = netD(torch.cat((data_shadow, c_predict_mask, c_predict_clean), dim=1)))
+          
+          # train with gradient penalty and curriculum regularization
+          gradient_penalty = calc_gradient_penalty(netD, data_shadow.data, data_clean.data, data_mask.data, c_predict_mask.data, c_predict_clean.data, penalty_lambda)
+          
+          D_loss = (0.5*((D_real-1).mean().pow(2) + D_fake.mean().pow(2)) + gradient_penalty)
+          Wasserstein_D = (D_fake.mean().pow(2) - D_real.mean().pow(2))  
+
+          netD.zero_grad()
+
+          D_loss.backward(retain_graph = True)
+
+          optimizerD.step()    
+
+        
+        ########################
+        # (2) update G network #
+        ########################
+
+        optimizerG.zero_grad()
+
+        for p in netD.parameters(): # reset requires_grad to False
+
+          p.requires_grad = False   # they are set to True again in netD update
+
+        netG.zero_grad()
+
+        G_loss = (netD(torch.cat((data_shadow, c_predict_mask, c_predict_clean), dim=1)) - 1).mean().pow(2)
+
+        loss_clean = loss_function_clean(reconstructed = c_predict_clean, target = c_data_clean)
+        loss_mask = loss_function_mask(reconstructed = c_predict_mask, target = c_data_mask)
+        
+        with torch.no_grad():
+
+          psnr_mask = (10 * torch.log10(1.0 / loss_mse(predict_mask), data_mask.detach())).mean()
+					psnr_clean = (10 * torch.log10(1.0 / loss_mse(rgb2yuv(predict_clean)[:,0].unsqueeze(1), rgb2yuv(data_clean)[:,0].unsqueeze(1)).detach())).mean()
+
+          psnrs_mask.append(psnr_mask)
+					psnrs_clean.append(psnr_clean)
+					
+					ssim_mask = instance_ssim(predict_mask, data_mask)
+					ssim_clean = instance_ssim(rgb2yuv(predict_clean), rgb2yuv(data_clean))
+					
+					ssims_mask.append(ssim_mask)
+					ssims_clean.append(ssim_clean)
+					
+        loss = loss_clean, loss_mask + G_loss 
+
+       	loss.backward()
+
+        optimizerG.step()
+
+        if (iteration-1) % 10 == 0:
+					print("===> Epoch[{}]({}/{}): Loss_clean:{:.6f}: Loss_mask:{:.6f} : Psnr_clean:{:.2f} : Psnr_mask:{:.2f} : SSIM_clean:{:2f} : SSIM_mask:{:2f} : Wasserstein:{} : Lr:{:6f}".format(epoch, iteration, len(train_data_loader), loss_clean.mean(), loss_mask.mean(), psnr_clean, psnr_mask.mean(), ssim_clean, ssim_mask.mean(), Wasserstein_D.mean(), optimizerG.param_groups[0]['lr']))
+
+            logger.add_scalar('loss', loss.item(), steps)
+
+            logger.add_scalar('psnr', psnr.item(), steps)
+
+            logger.add_scalar('ssim', ssim_loss.item(), steps)
+
+     
+        show = []
+
+        if (iteration-1) % opt.step == 0:
+
+            for idx, tensor in enumerate(zip(data_clean.data.cpu(), data_mask.data.cpu(), data_shadow.data.cpu(), data_predict.data.cpu().clamp(0,1))):
+
+              if idx >1:
+
+                break
+
+              show.extend([tensor[0], tensor[1], tensor[2], tensor[3]])
+
+            show = torch.stack(show,0)
+
+            show = make_grid(show, nrow = 4, padding = 5)
+
+            logger.add_image('Comparison_nEpochs:{}'.format(epoch), show)
+
+    logger.close() 
+
+def test(test_data_loader, netG):
+		psnrs = []
+		ssims= []
+		
+		
+    for iteration, batch in enumerate(test_data_loader, 1):
+
+        netG.eval()
+        steps = iteration
+
+        data_clean, data_mask data_shadow = \
+
+           Variable(batch[0]), \
+					 Variable(batch[1]), \
+           Variable(batch[2], requires_grad=False)
+
+        if opt.cuda:
+
+           data_clean = data_clean.cuda()
+					 data_mask = data_mask.cuda()
+           data_shadow = data_shadow.cuda()
+
+        else:
+					 data_clean = data_clean.cuda()
+					 data_mask = data_mask.cuda()
+           data_shadow = data_shadow.cuda()
+           
+				data_predict = netG(torch.cat((data_clean, data_mask), dim = 1)
+          
+        with torch.no_grad():
+
+          psnr = (10 * torch.log10(1.0 / loss_mse(rgb2yuv(data_predict)[:,0].unsqueeze(1), rgb2yuv(data_shadow)[:,0].unsqueeze(1)).detach())).mean()
+          psnr_mean.append(psnr)
+					
+					mse = nn.MSELoss()(rgb2yuv(output)[:,0,:,:], rgb2yuv(label)[:,0,:,:])
+	        ssim = ms_ssim_loss(output, label).item()
+  	      ssims.append(ssim)
+				
+		return sum(psnrs)/len(psnrs), sum(ssims)/len(ssims)
+
+def calc_gradient_penalty(netD, data_shadow, data_clean, data_mask, predict_clean, redict_mask, penalty_lambda):
+
+    alpha = torch.rand(1,1).expand_as(real_data).cuda()
+
+    interpolates_clean = Variable((alpha * data_clean + (1-alpha) * predict_clean), requires_grad = True)
+		interpolates_mask = Variable((alpha * data_mask + (1-alpha) * predict_mask), requires_grad = True)
+
+    disc_interpolates = netD(torch.cat((data_shadow, interpolates_mask, interpolates_clean), dim = 1))
+
+    gradients = torch.autograd.grad(outputs = disc_interpolates, inputs=interpolates,
+
+                              grad_outputs=torch.ones(disc_interpolates.size()).cuda(),
+
+                              create_graph = True,
+
+                              retain_graph = True,
+
+                              only_inputs=True)[0]
+
+                              
+    gradient_penalty = ((gradients.norm(2, dim = 1) - 1)).mean().pow(2) * penalty_lambda
+
+    return gradient_penalty
+    
+if __name__ == "__mian__":
+	os.system('clear')
+	main()
