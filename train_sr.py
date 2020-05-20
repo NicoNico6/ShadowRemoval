@@ -25,7 +25,7 @@ from utils import save_checkpoint, rgb2yuv, yuvloss
 from ssim import SSIM, CLBase
 
 parser = argparse.ArgumentParser(description="PyTorch ShadowRemoval")
-parser.add_argument("--pretrained", default="checkpoints/", help="path to folder containing the model")
+parser.add_argument("--pretrained", default="checkpoints/pretrained/ShadowRemoval/185_.pth", help="path to folder containing the model")
 parser.add_argument("--train", default="./datasets/ISTD_Dataset/ISTD_Dataset/train/", help="path to real train dataset")
 parser.add_argument("--test", default="./datasets/ISTD_Dataset/ISTD_Dataset/test/", help="path to test dataset")
 parser.add_argument("--batchSize", default = 4, type = int, help="training batch")
@@ -101,7 +101,7 @@ def main():
 
     # Tag_ResidualBlocks_BatchSize
 
-    logger = SummaryWriter("/home/lthpc/gnh/ShadowRemoval/runs_sr/" + time.strftime("/%Y-%m-%d-%H/", time.localtime()))
+    logger = SummaryWriter("./runs_sr/" + time.strftime("/%Y-%m-%d-%H/", time.localtime()))
 
     cuda = opt.cuda
 
@@ -156,12 +156,13 @@ def main():
     curriculum_ssim_clean = CLBase()
     
     # optionally copy weights from a checkpoint
-    if opt.pretrained:
+    if opt.pretrained and opt.continue_training:
         if os.path.isfile(opt.pretrained):
+            netG = nn.DataParallel(netG, [0, 1, 2, 3])
             print("=> loading model '{}'".format(opt.pretrained))
             weights = torch.load(opt.pretrained)
-            netG.load_state_dict(weights['state_dict_g'])
-
+            netG.load_state_dict(weights['state_dict'])
+            netG = netG.module
         else:
             print("=> no model found at '{}'".format(opt.pretrained))
 

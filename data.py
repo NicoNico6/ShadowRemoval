@@ -130,8 +130,6 @@ class SynsDataset(data.Dataset):
         
         self.transform = transform
 
-        self.training = training
-        
         self.clean_filenames = self.generate_filenames(clean_dir)
         self.mask_filenames = self.generate_filenames(mask_dir)
         
@@ -147,7 +145,6 @@ class SynsDataset(data.Dataset):
               file.write('{} {} {} \n'.format(os.path.join(roots[1], name), os.path.join(roots[2], name), os.path.join(roots[3], name)))
     
     def generate_filenames(self, data_dir):
-
         data = []
         
         names = []
@@ -157,7 +154,7 @@ class SynsDataset(data.Dataset):
           names.append(files)
           roots.append(root)
         for name in names[-1]:
-        	data.append(os.path.koin(roots[0], name))
+          data.append(os.path.join(roots[0], name))
           
         return data
         
@@ -185,12 +182,14 @@ class SynsDataset(data.Dataset):
     def __getitem__(self, index):
 
         clean = Image.fromarray(cv2.cvtColor(cv2.imread(self.clean_filenames[index]), cv2.COLOR_BGR2RGB))
-        masks = [Image.fromarray(cv2.cvtColor(cv2.imread(self.mask_filenames[random.randint(0, len(self.mask_filenames))]), cv2.COLOR_BGR2RGB)) for i in range(self.num)]
+        masks = [Image.fromarray(cv2.cvtColor(cv2.imread(self.mask_filenames[random.randint(0, len(self.mask_filenames)-1)]), cv2.COLOR_BGR2RGB)) for i in range(self.combination)]
+        
+        w, h = clean.size
         
         if self.transform:
             clean = self.transform(clean)
             for i in range(len(masks)):
-            	masks[i] =self.transform(masks[i]) 
+              masks[i] =self.transform(masks[i].resize((w, h), Image.ANTIALIAS)) 
         
         return [clean] + masks
 

@@ -337,7 +337,8 @@ class ShadowMattingNet(nn.Module):
     out = self.in_block(torch.cat((rgb, mask[:,0,:,:].unsqueeze(1)), dim = 1))
     for module in self.residuals:
       out = module(out)
-    out = self.out_block(out)
+    out = self.out_block(out)[:,:,:rgb.size(2), :rgb.size(3)]
+    
     alpha = torch.sigmoid(out[:,-1,:,:].unsqueeze(1))
     out = rgb.mul(alpha).add(out[:,:-1, :, :].mul(1 - alpha)).clamp(0, 1)
       

@@ -17,7 +17,7 @@ from torchvision.transforms import Compose, ToTensor, Resize, Normalize, CenterC
 from tensorboardX import SummaryWriter
 from torchvision.utils import make_grid
 
-from data import DatasetFromFolder
+from data import SynsDataset
 from models.networks import ShadowMattingNet, Discrimator
 from models.perceptual import perceptual
 from utils import save_checkpoint, rgb2yuv
@@ -25,9 +25,9 @@ from utils import save_checkpoint, rgb2yuv
 from ssim import SSIM, CLBase
 
 parser = argparse.ArgumentParser(description="PyTorch ShadowRemoval")
-parser.add_argument("--pretrained", default="checkpoints/", help="path to folder containing the model")
-parser.add_argument("--train", default="./datasets/ISTD_Dataset/ISTD_Dataset/train/", help="path to real train dataset")
-parser.add_argument("--test", default="./datasets/ISTD_Dataset/ISTD_Dataset/test/", help="path to test dataset")
+parser.add_argument("--pretrained", default="checkpoints/ShadowSyns/200_shadowsyns.pth", help="path to folder containing the model")
+parser.add_argument("--clean_data", default="./datasets/Shadow_USR/shadow_USR/shadow_free/", help="path to real train dataset")
+parser.add_argument("--mask_data", default="./datasets/ISTD_Dataset/ISTD_Dataset/train/train_B/", help="path to test dataset")
 parser.add_argument("--batchSize", default = 4, type = int, help="training batch")
 parser.add_argument("--save_model_freq", default=5, type=int, help="frequency to save model")
 parser.add_argument("--cuda", default=True, type=bool, help="frequency to save model")
@@ -52,8 +52,6 @@ def main():
 
     # Tag_ResidualBlocks_BatchSize
 
-    logger = SummaryWriter("/home/lthpc/gnh/ShadowRemoval/runs_ss/" + time.strftime("/%Y-%m-%d-%H/", time.localtime()))
-
     cuda = opt.cuda
 
     if cuda and not torch.cuda.is_available():
@@ -71,11 +69,10 @@ def main():
     cudnn.benchmark = True
 
     print("==========> Loading datasets")
-    dataset = DatasetFromFolder(
+    dataset = SynsDataset(
         opt.clean_data,
         opt.mask_data, 
         transform=Compose([ToTensor()]),
-        training = False,        
         )
 
 
@@ -88,10 +85,11 @@ def main():
     # optionally copy weights from a checkpoint
     if opt.pretrained:
         if os.path.isfile(opt.pretrained):
+            netG = nn.DataParallel(netG, [0, 1, 2, 3])
             print("=> loading model '{}'".format(opt.pretrained))
             weights = torch.load(opt.pretrained)
-            netG.load_state_dict(weights['state_dict_g'])
-
+            netG.load_state_dict(weights['state_dict'])
+            netG = netG.cuda()  
         else:
             print("=> no model found at '{}'".format(opt.pretrained))
 
@@ -105,50 +103,51 @@ def main():
     else:
         netG = netG.cpu()
     
-def Syns(clean_data_loader, mask_data_loader, netG):
+    Syns(data_loader, netG)
+def Syns(data_loader, netG):
     psnrs = []
     ssims= []
     
-    for iteration, batch in enumerate(test_data_loader, 1):
-				 
+    for iteration, batch in enumerate(data_loader, 1):
+         
         netG.eval()
         steps = iteration
 
-				syns = []
-				
-				for item in batch:
-					item = Variable(item, requires_grad=False)
-					if opt.cuda():
-						item = item.cuda()
-					else:
-						item = item.cpu()
+        syns = []
+        
+        for item in batch:
+          item = Variable(item, requires_grad=False)
+          if opt.cuda:
+            item = item.cuda()
+          else:
+            item = item.cpu()
         
         if not os.path.exists("datasets/syns"):
-        	os.mkdir("datasets/syns")
+          os.mkdir("datasets/syns")
         
         if not os.path.exists("datasets/syns/clean"):
-        	os.mkdir("datasets/syns/clean")
+          os.mkdir("datasets/syns/clean")
         
         if not os.path.exists("datasets/syns/mask"):
-        	os.mkdir("datasets/syns/mask")
+          os.mkdir("datasets/syns/mask")
         
         if not os.path.exists("datasets/syns/shadow"):
-        	os.mkdir("datasets/syns/shadow")
-        	
-        for i in range(1, 4)£º
-        		with torch.no_grad():
-        			data_shadow = Image.fromarray(np.uint8(netG(batch[0], batch[i]).mul(255).data.cpu().numpy()))
-        			data_clean = Image.fromarray(np.uint8(batch[0].mul(255).cpu().data.numpy()))
-        			data_mask = Image.fromarray(np.uint8(batch[i].mul(255).data.cpu().expand_as(batch[0]).numpy()))
-        		
-        		data_shadow.save("datasets/syns/shadow/{}_{}.jpg".format(iteration, i))
-        		data_clean.save("datasets/syns/cleam/{}_{}.jpg".format(iteration, i))
-        		data_mask.save("datasets/syns/mask/{}_{}.jpg".format(iteration, i))
-        			
-       			
-       	
-       	
-				
+          os.mkdir("datasets/syns/shadow")
+          
+        for i in range(1, 4):
+            with torch.no_grad():
+              data_shadow = Image.fromarray(np.uint8(netG(batch[0], batch[i])[0].permute(1,2,0).mul(255).data.cpu().numpy()))
+              data_clean = Image.fromarray(np.uint8(batch[0][0].permute(1,2,0).mul(255).cpu().data.numpy()))
+              data_mask = Image.fromarray(np.uint8(batch[i][0].permute(1,2,0).mul(255).data.cpu().numpy()))
+            
+            data_shadow.save("datasets/syns/shadow/{}_{}.jpg".format(iteration, i))
+            data_clean.save("datasets/syns/clean/{}_{}.jpg".format(iteration, i))
+            data_mask.save("datasets/syns/mask/{}_{}.jpg".format(iteration, i))
+            print("Synsing the {}th Paired Images in datasets/syns/".format(iteration))  
+            
+        
+        
+        
 if __name__ == "__main__":
     os.system('clear')
     main()

@@ -135,7 +135,7 @@ def main():
 
     print("==========> Building model")
     netG = ShadowMattingNet(channels =64, depth = 9)
-    netD = Discrimator(in_channels = 6, channels = 64, depth = 5)
+    netD = Discrimator(in_channels = 7, channels = 64, depth = 5)
 
     
     print("=========> Building criterion")
@@ -222,7 +222,7 @@ def calc_gradient_penalty(netD, data_clean, data_mask, data_predict, data_shadow
     
     interpolates = Variable((alpha * data_shadow + (1-alpha) * data_predict), requires_grad = True)
 
-    disc_interpolates = netD(torch.cat((data_clean, interpolates), dim = 1))
+    disc_interpolates = netD(torch.cat((data_mask, data_clean, interpolates), dim = 1))
     '''   
     interpolates = Variable((alpha * data_shadow + (1-alpha) * data_predict), requires_grad = True)
 
@@ -239,7 +239,7 @@ def calc_gradient_penalty(netD, data_clean, data_mask, data_predict, data_shadow
                               only_inputs=True)[0]
 
                               
-    gradient_penalty = ((gradients.norm(2, dim = 1))-1).pow(2).mean() * penalty_lambda
+    gradient_penalty = ((gradients.norm(2, dim = 1))-1).mean() * penalty_lambda
 
     return gradient_penalty
     
@@ -259,7 +259,7 @@ def train(training_data_loader, netG, netD, optimizerG, optimizerD, epoch):
 
     logger = SummaryWriter("./runs_ss/" + time.strftime("/%Y-%m-%d-%H/", time.localtime()))
 
-    loss_function_main = loss_function(smoothl1 = False, l1 = False, mse = True, instance_ssim = True, perceptual_loss = True)
+    loss_function_main = loss_function(smoothl1 = False, l1 = True, mse = False, instance_ssim = True, perceptual_loss = True)
 
     for iteration, batch in enumerate(training_data_loader, 1):
 
@@ -302,8 +302,8 @@ def train(training_data_loader, netG, netD, optimizerG, optimizerD, epoch):
             p.requires_grad = True    # they are set to False again in netG update.
 
           # train with real
-          D_real = netD(torch.cat((data_clean, c_data_shadow), dim=1))
-          D_fake = netD(torch.cat((data_clean, c_data_predict.detach()), dim=1))
+          D_real = netD(torch.cat((data_mask, data_clean, c_data_shadow), dim=1))
+          D_fake = netD(torch.cat((data_mask, data_clean, c_data_predict.detach()), dim=1))
           
           #D_real = netD(((c_data_shadow)))
           #D_fake = netD(((c_data_predict.detach())))
@@ -311,8 +311,8 @@ def train(training_data_loader, netG, netD, optimizerG, optimizerD, epoch):
           # train with gradient penalty and curriculum regularization
           gradient_penalty = calc_gradient_penalty(netD, data_clean.data, data_mask.data, c_data_predict.data, c_data_shadow.data, penalty_lambda)
           
-          D_loss = (0.5*((D_real-1).pow(2).mean() + D_fake.pow(2).mean()) + gradient_penalty)
-          Wasserstein_D = (D_fake.pow(2).mean() - D_real.pow(2).mean())  
+          D_loss = (0.5*((D_real-1).mean() + D_fake.mean()) + gradient_penalty)
+          Wasserstein_D = (D_fake.mean() - D_real.mean())  
 
           netD.zero_grad()
 
@@ -333,7 +333,7 @@ def train(training_data_loader, netG, netD, optimizerG, optimizerD, epoch):
 
         netG.zero_grad()
 
-        G_loss = (netD(torch.cat((data_clean, c_data_predict), dim=1)) - 1).pow(2).mean()
+        G_loss = (netD(torch.cat((data_mask, data_clean, c_data_predict), dim=1)) - 1).mean()
         #G_loss = (netD(c_data_predict) - 1).mean().pow(2)
 
         loss_shadow = loss_function_main(reconstructed = c_data_predict, target = c_data_shadow, original_r = data_predict, original_t = data_shadow).mean()
@@ -348,7 +348,7 @@ def train(training_data_loader, netG, netD, optimizerG, optimizerD, epoch):
           
           ssims.append(ssim)
           
-        loss = loss_shadow + 0.01*(G_loss) 
+        loss = 100*loss_shadow + (G_loss) 
 
         loss.backward()
 

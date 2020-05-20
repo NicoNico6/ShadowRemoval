@@ -47,9 +47,9 @@ def is_image_file(filename):
 def load_all_image(path):
   return [join(path, x) for x in listdir(path) if is_image_file(x)]
 
-def save_checkpoint(model, epoch, model_folder):
+def save_checkpoint(model, epoch, model_folder, opt):
   model_out_path = "checkpoints/%s/%d_shadowsyns.pth" % (model_folder, epoch)
-  state_dict = model.state_dict()
+  state_dict = model.state_dict() if not opt.parallel else model.module.state_dict()
   for key in state_dict.keys():
     state_dict[key] = state_dict[key].cpu()
 
