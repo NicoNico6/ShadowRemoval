@@ -32,8 +32,7 @@ class ConvLayer(nn.Module):
           
     def forward(self, x):
         
-        out = self.reflection_pad(x)
-        out = self.conv2d(out)
+        out = self.conv2d(self.reflection_pad(x))
         if self.normalization is not None:
           out = self.normalization(out)
         
@@ -233,6 +232,8 @@ class ShadowRemoval(nn.Module):
     self.block4_1 = nn.Conv2d(in_channels = channels, out_channels = 4, kernel_size = 1, stride = 1)
     self.block4_2 = nn.Conv2d(in_channels = channels, out_channels = 1, kernel_size = 1, stride = 1)
     
+    self.dropout = nn.Dropout(0.2)
+    
   def forward(self, x):
     
     out = self.fusion(self.backbone(x))
@@ -246,6 +247,7 @@ class ShadowRemoval(nn.Module):
     
     out0_2 = agg0_rgb.mul(torch.sigmoid(agg0_mas))
     
+    #out0_2 = self.dropout(out0_2)
     ##Stage1
     out1_1 = self.block1_1(out0_2)
     out1_2 = self.block1_2(out1_1)
@@ -254,6 +256,8 @@ class ShadowRemoval(nn.Module):
     agg1_mas = self.aggreation1_mas(torch.cat((agg0_mas, out1_1, out1_2), dim = 1))
     
     out1_2 = agg1_rgb.mul(torch.sigmoid(agg1_mas))
+    
+    #out1_2 = self.dropout(out1_2)
     
     ##Stage2
     out2_1 = self.block2_1(out1_2)
@@ -264,6 +268,7 @@ class ShadowRemoval(nn.Module):
     
     out2_2 = agg2_rgb.mul(torch.sigmoid(agg2_mas))
     
+    #out2_2 = self.dropout(out2_2)
     ##Stage3
     out3_1 = self.block3_1(out2_2)
     out3_2 = self.block3_2(out3_1)
@@ -281,8 +286,10 @@ class ShadowRemoval(nn.Module):
     out_mas = torch.sigmoid(self.block4_2(spp_mas))
     
     alpha = torch.sigmoid(out_rgb[:,-1,:,:].unsqueeze(1))
-    out_rgb = x.mul(alpha).add(out_rgb[:,:-1, :, :].mul(1 - alpha))
-    return out_rgb, out_mas
+    
+    out_rgb = x.mul(alpha).add(out_rgb[:,:-1, :, :].mul(1 - alpha)).clamp(0,1)
+    #out_rgb = out_rgb[:,:-1,:,:].clamp(0,1)
+    return out_rgb, out_mas.clamp(0,1)
     
     
 class Discrimator(nn.Module):
@@ -341,6 +348,5 @@ class ShadowMattingNet(nn.Module):
     
     alpha = torch.sigmoid(out[:,-1,:,:].unsqueeze(1))
     out = rgb.mul(alpha).add(out[:,:-1, :, :].mul(1 - alpha)).clamp(0, 1)
-      
     return out
     

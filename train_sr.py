@@ -24,20 +24,33 @@ from utils import save_checkpoint, rgb2yuv, yuvloss
 
 from ssim import SSIM, CLBase
 
+try:
+    from apex.parallel import DistributedDataParallel as DDP
+    #from apex.acceleration_utils import *
+    from apex import amp
+    from apex.multi_tensor_apply import multi_tensor_applier
+
+except ImportError:
+    raise ImportError("Please install apex from https://www.github.com/nvidia/apex to run this example.")
+    
 parser = argparse.ArgumentParser(description="PyTorch ShadowRemoval")
-parser.add_argument("--pretrained", default="checkpoints/pretrained/ShadowRemoval/185_.pth", help="path to folder containing the model")
-parser.add_argument("--train", default="./datasets/ISTD_Dataset/ISTD_Dataset/train/", help="path to real train dataset")
-parser.add_argument("--test", default="./datasets/ISTD_Dataset/ISTD_Dataset/test/", help="path to test dataset")
+parser.add_argument("--pretrained", default="checkpoints/pretrained/ShadowRemoval/35_shadowsyns.pth", help="path to folder containing the model")
+parser.add_argument("--train", default="/media/opt48/data/gnh/ISTD_Dataset/ISTD_Dataset/train/", help="path to real train dataset")
+parser.add_argument("--test", default="/media/opt48/data/gnh/ISTD_Dataset/ISTD_Dataset/test/", help="path to test dataset")
 parser.add_argument("--batchSize", default = 4, type = int, help="training batch")
 parser.add_argument("--save_model_freq", default=5, type=int, help="frequency to save model")
 parser.add_argument("--cuda", default=True, type=bool, help="frequency to save model")
 parser.add_argument("--parallel", action = 'store_true', help = "parallel training")
 parser.add_argument("--is_hyper", default=1, type=int, help="use hypercolumn or not")
 parser.add_argument("--is_training", default=1, help="training or testing")
-parser.add_argument("--continue_training", action="store_true", help="search for checkpoint in the subfolder specified by `task` argument")
+parser.add_argument("--continue_training", default = True, type=bool,  help="search for checkpoint in the subfolder specified by `task` argument")
 parser.add_argument("--lr_g", default = 3e-4, type = float, help="generator learning rate")
 parser.add_argument("--lr_d", default = 1e-3, type = float, help = "discrimator learning rate")
 parser.add_argument("--epoch", default = 100, type = int, help = "training epoch")
+parser.add_argument("--acceleration", default = False, type = bool, help = "activating acceleration or mix precision acceleration")
+parser.add_argument("--opt_level", default = "O1", help = "setting the apex mode")
+parser.add_argument("--local_rank", default=0, type=int)
+parser.add_argument("--distributed", default=False, type=bool)
 
 class loss_function(nn.Module):
   def __init__(self, smoothl1 = True, l1 = False, mse = False, instance_ssim = True, bce = False, perceptual_loss = True, yuv = False):
@@ -63,7 +76,7 @@ class loss_function(nn.Module):
     self.weight['loss_yuv'] = 1
     
     if opt.cuda:
-        if opt.parallel:
+        if False:
           for key in self.loss_function.keys():
             if self.loss_function[key] is not None:
               self.loss_function[key] = nn.DataParallel(self.loss_function[key], [0, 1, 2, 3]).cuda()
@@ -104,11 +117,20 @@ def main():
     logger = SummaryWriter("./runs_sr/" + time.strftime("/%Y-%m-%d-%H/", time.localtime()))
 
     cuda = opt.cuda
-
+    
+    if 'WORLD_SIZE' in os.environ:
+      opt.distributed = int(os.environ['WORLD_SIZE']) > 1
+          
     if cuda and not torch.cuda.is_available():
 
         raise Exception("No GPU found, please run without --cuda")
-
+    
+    if opt.distributed:
+      opt.gpu = opt.local_rank
+      torch.cuda.set_device(opt.gpu)
+      torch.distributed.init_process_group(backend='nccl', init_method='env://')
+      opt.world_size = torch.distributed.get_world_size()
+          
     seed = 1334
 
     torch.manual_seed(seed)
@@ -118,7 +140,7 @@ def main():
         torch.cuda.manual_seed(seed)
 
     cudnn.benchmark = True
-
+    
     print("==========> Loading datasets")
     train_dataset = DatasetFromFolder(
         opt.train, 
@@ -158,41 +180,48 @@ def main():
     # optionally copy weights from a checkpoint
     if opt.pretrained and opt.continue_training:
         if os.path.isfile(opt.pretrained):
-            netG = nn.DataParallel(netG, [0, 1, 2, 3])
             print("=> loading model '{}'".format(opt.pretrained))
             weights = torch.load(opt.pretrained)
             netG.load_state_dict(weights['state_dict'])
-            netG = netG.module
+            
         else:
             print("=> no model found at '{}'".format(opt.pretrained))
 
+
+    print("==========> Setting Optimizer")
+    optimizerG = optim.Adam(filter(lambda p: p.requires_grad, netG.parameters()), lr=opt.lr_g, betas = (0.9, 0.999))
+    #optimizerD = optim.Adam(filter(lambda p: p.requires_grad, netD.module.parameters() if opt.parallel else netD.parameters()), lr=opt.lr_d, betas = (0.5, 0.999))
+    optimizerD = optim.SGD(filter(lambda p: p.requires_grad, netD.parameters()), lr=opt.lr_d)
+    
+    
     print("==========> Setting GPU")
     if cuda:
+        netG = netG.cuda()
+        netD = netD.cuda()
+        
+        instance_ssim = instance_ssim.cuda()
+        loss_smooth_l1 = loss_smooth_l1.cuda()        
+        loss_mse = loss_mse.cuda()
+        loss_l1 = loss_l1.cuda()
+        loss_bce = loss_bce.cuda()
+        curriculum_ssim_mask = curriculum_ssim_mask.cuda()
+        curriculum_ssim_clean = curriculum_ssim_clean.cuda()
+        loss_perceptual = loss_perceptual.cuda()
+        rgb2yuv = rgb2yuv.cuda()
+        
+        if opt.acceleration:
+          print("FP 16 Trianing")
+          amp.register_float_function(torch, 'sigmoid')
+          [netD, netG], [optimizerD, optimizerG] = amp.initialize([netD, netG], [optimizerD, optimizerG], opt_level=opt.opt_level)
+        
         if opt.parallel:
-          netG = nn.DataParallel(netG, [0, 1, 2, 3]).cuda()
-          netD = nn.DataParallel(netD, [0, 1, 2, 3]).cuda()
-        
-          instance_ssim = nn.DataParallel(instance_ssim, [0, 1, 2, 3]).cuda()
-          loss_smooth_l1 = nn.DataParallel(loss_smooth_l1, [0, 1, 2, 3]).cuda()        
-          loss_mse = nn.DataParallel(loss_mse, [0, 1, 2, 3]).cuda()
-          loss_l1 = nn.DataParallel(loss_l1, [0, 1, 2, 3]).cuda()
-          loss_bce = nn.DataParallel(loss_bce, [0, 1, 2 ,3]).cuda()
-          curriculum_ssim_mask = nn.DataParallel(curriculum_ssim_mask, [0, 1, 2, 3]).cuda()
-          curriculum_ssim_clean = nn.DataParallel(curriculum_ssim_clean, [0, 1, 2, 3]).cuda()
-          rgb2yuv = nn.DataParallel(rgb2yuv, [0, 1, 2, 3]).cuda()
-        else:
-          netG = netG.cuda()
-          netD = netD.cuda()
-        
-          instance_ssim = instance_ssim.cuda()
-          loss_smooth_l1 = loss_smooth_l1.cuda()        
-          loss_mse = loss_mse.cuda()
-          loss_l1 = loss_l1.cuda()
-          loss_bce = loss_bce.cuda()
-          curriculum_ssim_mask = curriculum_ssim_mask.cuda()
-          curriculum_ssim_clean = curriculum_ssim_clean.cuda()
-          loss_perceptual = loss_perceptual.cuda()
-          rgb2yuv = rgb2yuv.cuda()
+          print("Parallel Training")
+          netG = nn.DataParallel(netG)
+          netD = nn.DataParallel(netD)
+        elif opt.distributed:
+          netG = DDP(netG, delay_allreduce=True)
+          netD = DDP(netD, delay_allreduce=True)
+            
     else:
         netG = netG.cpu()
         netD = netD.cpu()
@@ -206,29 +235,26 @@ def main():
         loss_perceptual = loss_perceptual.cpu()
         rgb2yuv = rgb2yuv.cpu()
 
-    print("==========> Setting Optimizer")
-    optimizerG = optim.Adam(filter(lambda p: p.requires_grad, netG.module.parameters() if opt.parallel else netG.parameters()), lr=opt.lr_g, betas = (0.9, 0.999))
-    #optimizerD = optim.Adam(filter(lambda p: p.requires_grad, netD.module.parameters() if opt.parallel else netD.parameters()), lr=opt.lr_d, betas = (0.5, 0.999))
-    optimizerD = optim.SGD(filter(lambda p: p.requires_grad, netD.module.parameters() if opt.parallel else netD.parameters()), lr=opt.lr_d)
-
+    
     lr_schedulerG = optim.lr_scheduler.CosineAnnealingLR(optimizerG, opt.epoch, eta_min = 1e-7)
     lr_schedulerD = optim.lr_scheduler.CosineAnnealingLR(optimizerD, opt.epoch, eta_min = 1e-7)
 
-   
     print("==========> Training")
     for epoch in range(opt.epoch + 1):
 
-        train(train_data_loader, netG, netD, optimizerG, optimizerD, epoch)
-        test(test_data_loader, netG)
+        train(train_data_loader, netG, netD, optimizerG, optimizerD, epoch, logger = logger)
+        #test(test_data_loader, netG)
         
         if epoch % opt.save_model_freq == 0:
-          save_checkpoint(netG, epoch, name)
+          save_checkpoint(netG, epoch, name, opt)
           
         lr_schedulerG.step()
         lr_schedulerD.step()     
     
+    logger.close() 
+
     
-def train(train_data_loader, netG, netD, optimizerG, optimizerD, epoch):
+def train(train_data_loader, netG, netD, optimizerG, optimizerD, epoch, logger):
 
     print("epoch =", epoch, "lr =", optimizerG.param_groups[0]["lr"])
 
@@ -283,27 +309,33 @@ def train(train_data_loader, netG, netD, optimizerG, optimizerD, epoch):
         predict_clean, predict_mask = netG(data_shadow)
         
         # curriculum learning 
-        #c_predict_clean, c_data_clean, weight = curriculum_ssim_clean(predict_clean*data_mask, data_clean*data_mask, epoch + atomAge * iteration)
         c_predict_clean, c_data_clean = predict_clean, data_clean
-        #c_predict_mask, c_data_mask, weight = curriculum_ssim_mask(predict_mask, data_mask, epoch + atomAge * iteration)
         c_predict_mask, c_data_mask = predict_mask, data_mask
+        
         if iteration % 2 == 0:
           for p in netD.parameters():   # reset requires_grad to True
             p.requires_grad = True    # they are set to False again in netG update.
 
           # train with real
-          D_real = netD(torch.cat((data_shadow*data_mask, c_data_clean*data_mask), dim=1))
-          D_fake = netD(torch.cat((data_shadow*data_mask, c_predict_clean*data_mask), dim=1))
+          D_real = netD(torch.cat((data_shadow, c_data_clean), dim=1).detach())
+          D_fake = netD(torch.cat((data_shadow, c_predict_clean), dim=1).detach())
           
           # train with gradient penalty and curriculum regularization
-          gradient_penalty = calc_gradient_penalty(netD, data_shadow.data, data_clean.data, data_mask.data, c_predict_clean.data, c_predict_mask.data, penalty_lambda)
+          gradient_penalty = calc_gradient_penalty(netD, data_shadow.data, data_clean.data, data_mask.data, c_predict_clean.data.detach(), c_predict_mask.data.detach(), penalty_lambda)
           
           D_loss = 0.5*((D_real-1).mean() + D_fake.mean()) + gradient_penalty
           Wasserstein_D = (D_fake.mean() - D_real.mean())  
 
           netD.zero_grad()
-
-          D_loss.backward(retain_graph = True)
+          
+          if opt.acceleration:
+            with amp.scale_loss(D_loss, optimizerD) as D_loss_scaled:
+              D_loss_scaled.clamp(1e-8, 1e8)
+              D_loss_scaled.backward(retain_graph = True)
+            torch.nn.utils.clip_grad_norm_(amp.master_params(optimizerD), 5)
+          
+          else:    
+            D_loss.backward(retain_graph = True)
 
           optimizerD.step()    
 
@@ -320,10 +352,10 @@ def train(train_data_loader, netG, netD, optimizerG, optimizerD, epoch):
 
         netG.zero_grad()
         
-        G_loss = (netD(torch.cat((data_shadow*data_mask, c_predict_clean*data_mask), dim=1)) - 1).mean()
+        G_loss = (netD(torch.cat((data_shadow, c_predict_clean), dim=1)) - 1).mean()
 
         loss_clean = loss_function_clean(reconstructed = c_predict_clean, target = c_data_clean, original_r = predict_clean, original_t = data_clean).mean()
-        loss_mask = loss_function_mask(reconstructed = c_predict_mask, target = c_data_mask, original_r = predict_mask, original_t = data_mask).mean()
+        loss_mask = loss_function_mask(reconstructed = c_predict_mask.clamp(0,1), target = c_data_mask.clamp(0,1), original_r = predict_mask.clamp(0,1), original_t = data_mask.clamp(0,1)).mean()
         
         with torch.no_grad():
 
@@ -342,9 +374,16 @@ def train(train_data_loader, netG, netD, optimizerG, optimizerD, epoch):
           bce_mask = loss_bce(predict_mask.clamp(0,1), data_mask).mean()          
           bces_mask.append(bce_mask)
           
-        loss = 100*(0.2*loss_clean + loss_mask) + G_loss
-
-        loss.backward()
+        loss = 100*(0.2*loss_clean) + loss_mask + G_loss
+        
+        if opt.acceleration:
+          with amp.scale_loss(loss, optimizerG) as loss_scaled:
+            loss_scaled.clamp(1e-8, 1e8)
+            loss_scaled.backward()
+          torch.nn.utils.clip_grad_norm_(amp.master_params(optimizerG), 5)
+          
+        else:      
+          loss.backward()
 
         optimizerG.step()
 
@@ -377,8 +416,7 @@ def train(train_data_loader, netG, netD, optimizerG, optimizerD, epoch):
 
             logger.add_image('Comparison_nEpochs:{}'.format(epoch), show)
 
-    logger.close() 
-
+    
 def test(test_data_loader, netG):
     psnrs_clean = []
     psnrs_mask = []
@@ -393,7 +431,7 @@ def test(test_data_loader, netG):
         netG.eval()
         steps = iteration
 
-        data_clean, data_mask, data_shadow = \
+        data_shadow, data_mask, data_clean = \
            Variable(batch[0]), \
            Variable(batch[1]), \
            Variable(batch[2], requires_grad=False)
@@ -405,9 +443,9 @@ def test(test_data_loader, netG):
            data_shadow = data_shadow.cuda()
 
         else:
-           data_clean = data_clean.cuda()
-           data_mask = data_mask.cuda()
-           data_shadow = data_shadow.cuda()
+           data_clean = data_clean.cpu()
+           data_mask = data_mask.cpu()
+           data_shadow = data_shadow.cpu()
            
         predict_clean, predict_mask = netG(data_shadow)
           
@@ -420,7 +458,7 @@ def test(test_data_loader, netG):
           psnrs_clean.append(psnr_clean)
           
           ssim_mask = 1 - instance_ssim(predict_mask, data_mask).mean()
-          ssim_clean = 1 - instance_ssim(rgb2yuv(predict_clean), rgb2yuv(data_clean)).mean()
+          ssim_clean = 1 - instance_ssim(rgb2yuv(predict_clean)[:,0].unsqueeze(1), rgb2yuv(data_clean)[:,0].unsqueeze(1)).mean()
           
           ssims_mask.append(ssim_mask)
           ssims_clean.append(ssim_clean)
@@ -434,9 +472,7 @@ def calc_gradient_penalty(netD, data_shadow, data_clean, data_mask, predict_clea
 
     alpha = torch.rand(1,1).cuda()
     alpha_clean = alpha.expand_as(data_clean)
-    #alpha_mask = alpha.expand_as(data_mask)
     interpolates_clean = Variable((alpha_clean * data_clean + (1-alpha_clean) * predict_clean), requires_grad = True)
-    #interpolates_mask = Variable((alpha_mask * data_mask + (1-alpha_mask) * predict_mask), requires_grad = True)
     inputs = torch.cat((data_shadow, interpolates_clean), dim = 1)
     disc_interpolates = netD(inputs)
 

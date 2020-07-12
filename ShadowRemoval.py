@@ -24,8 +24,17 @@ from utils import save_checkpoint, rgb2yuv, yuvloss
 
 from ssim import SSIM, CLBase
 
+try:
+    from apex.parallel import DistributedDataParallel as DDP
+    #from apex.acceleration_utils import *
+    from apex import amp
+    from apex.multi_tensor_apply import multi_tensor_applier
+
+except ImportError:
+    raise ImportError("Please install apex from https://www.github.com/nvidia/apex to run this example.")
+
 parser = argparse.ArgumentParser(description="PyTorch ShadowRemoval")
-parser.add_argument("--pretrained", default="checkpoints/pretrained/ShadowRemoval/40_shadowsyns.pth", help="path to folder containing the model")
+parser.add_argument("--pretrained", default="checkpoints/ShadowRemoval/100_shadowsyns.pth", help="path to folder containing the model")
 parser.add_argument("--test", default="./datasets/ISTD_Dataset/ISTD_Dataset/test/", help="path to test dataset")
 parser.add_argument("--batchSize", default = 1, type = int, help="training batch")
 parser.add_argument("--save_model_freq", default=5, type=int, help="frequency to save model")
@@ -37,6 +46,9 @@ parser.add_argument("--continue_training", action="store_true", help="search for
 parser.add_argument("--lr_g", default = 3e-4, type = float, help="generator learning rate")
 parser.add_argument("--lr_d", default = 1e-3, type = float, help = "discrimator learning rate")
 parser.add_argument("--epoch", default = 500, type = int, help = "training epoch")
+parser.add_argument("--acceleration", default = False, type = bool, help = "activating acceleration or mix precision acceleration")
+parser.add_argument("--opt_level", default = "O1", help = "setting the apex mode")
+parser.add_argument("--local_rank", default=0, type=int)
 
       
 def main():
@@ -60,7 +72,20 @@ def main():
     seed = 1334
 
     torch.manual_seed(seed)
+    
+    if 'WORLD_SIZE' in os.environ:
+      opt.distributed = int(os.environ['WORLD_SIZE']) > 1
+          
+    if cuda and not torch.cuda.is_available():
 
+        raise Exception("No GPU found, please run without --cuda")
+    
+    if opt.parallel:
+      opt.gpu = opt.local_rank
+      torch.cuda.set_device(opt.gpu)
+      torch.distributed.init_process_group(backend='nccl', init_method='env://')
+      opt.world_size = torch.distributed.get_world_size()
+    
     if cuda:
 
         torch.cuda.manual_seed(seed)
@@ -101,32 +126,28 @@ def main():
             netG.load_state_dict(weights['state_dict'])
         else:
             print("=> no model found at '{}'".format(opt.pretrained))
-
+    
+    print("==========> Setting Optimizer")
+    optimizerG = optim.Adam(filter(lambda p: p.requires_grad, netG.parameters()), lr=opt.lr_g, betas = (0.9, 0.999))
+    
     print("==========> Setting GPU")
     if cuda:
-        if opt.parallel:
-          netG = nn.DataParallel(netG, [0, 1, 2, 3]).cuda()
-          
-          instance_ssim = nn.DataParallel(instance_ssim, [0, 1, 2, 3]).cuda()
-          loss_smooth_l1 = nn.DataParallel(loss_smooth_l1, [0, 1, 2, 3]).cuda()        
-          loss_mse = nn.DataParallel(loss_mse, [0, 1, 2, 3]).cuda()
-          loss_l1 = nn.DataParallel(loss_l1, [0, 1, 2, 3]).cuda()
-          loss_bce = nn.DataParallel(loss_bce, [0, 1, 2 ,3]).cuda()
-          curriculum_ssim_mask = nn.DataParallel(curriculum_ssim_mask, [0, 1, 2, 3]).cuda()
-          curriculum_ssim_clean = nn.DataParallel(curriculum_ssim_clean, [0, 1, 2, 3]).cuda()
-          rgb2yuv = nn.DataParallel(rgb2yuv, [0, 1, 2, 3]).cuda()
-        else:
-          netG = netG.cuda()
-          
-          instance_ssim = instance_ssim.cuda()
-          loss_smooth_l1 = loss_smooth_l1.cuda()        
-          loss_mse = loss_mse.cuda()
-          loss_l1 = loss_l1.cuda()
-          loss_bce = loss_bce.cuda()
-          curriculum_ssim_mask = curriculum_ssim_mask.cuda()
-          curriculum_ssim_clean = curriculum_ssim_clean.cuda()
-          loss_perceptual = loss_perceptual.cuda()
-          rgb2yuv = rgb2yuv.cuda()
+        netG = netG.cuda()  
+        instance_ssim = instance_ssim.cuda()
+        loss_smooth_l1 = loss_smooth_l1.cuda()        
+        loss_mse = loss_mse.cuda()
+        loss_l1 = loss_l1.cuda()
+        loss_bce = loss_bce.cuda()
+        curriculum_ssim_mask = curriculum_ssim_mask.cuda()
+        curriculum_ssim_clean = curriculum_ssim_clean.cuda()
+        loss_perceptual = loss_perceptual.cuda()
+        rgb2yuv = rgb2yuv.cuda()
+        
+        if opt.acceleration:
+          print("FP 16 Trianing")
+          amp.register_float_function(torch, 'sigmoid')
+          netG, optimizerG = amp.initialize(netG, optimizerG, opt_level=opt.opt_level)
+                  
     else:
         netG = netG.cpu()
         
@@ -138,6 +159,7 @@ def main():
         curriculum_ssim = curriculum_ssim.cpu()
         loss_perceptual = loss_perceptual.cpu()
         rgb2yuv = rgb2yuv.cpu()
+    
     test(data_loader, netG)
             
 def test(test_data_loader, netG):
@@ -182,10 +204,10 @@ def test(test_data_loader, netG):
            data_mask = data_mask.cpu()
            data_shadow = data_shadow.cpu()
            
-        predict_clean, predict_mask = netG(data_shadow)
           
         with torch.no_grad():
-
+          predict_clean, predict_mask = netG(data_shadow)
+        
           psnr_mask = (10 * torch.log10(1.0 / loss_mse(predict_mask, data_mask.detach()))).mean()
           psnr_clean = (10 * torch.log10(1.0 / loss_mse(rgb2yuv(predict_clean)[:,0].unsqueeze(1), rgb2yuv(data_clean)[:,0].unsqueeze(1)).detach())).mean()
 
@@ -201,7 +223,7 @@ def test(test_data_loader, netG):
           bce_mask = loss_bce(predict_mask.clamp(0,1), data_mask)          
           bces_mask.append(bce_mask)
         
-        data_clean = Image.fromarray(np.uint8(torch.cat((data_clean, predict_clean), dim = 3).cpu().data[0].permute(1,2,0).mul(255)))
+        data_clean = Image.fromarray(np.uint8(torch.cat((data_clean, data_mask.expand_as(data_clean), predict_clean), dim = 3).cpu().data[0].permute(1,2,0).mul(255)))
         data_mask = Image.fromarray(np.uint8(torch.cat((data_mask.expand_as(data_shadow), predict_mask.expand_as(data_shadow)), dim = 3).cpu().data[0].permute(1,2,0).mul(255)))
         data_shadow = Image.fromarray(np.uint8(data_shadow.cpu().data[0].permute(1,2,0).mul(255)))   
         
@@ -209,6 +231,7 @@ def test(test_data_loader, netG):
         data_clean.save("datasets/removals/clean/{}_{}_{}.jpg".format(iteration, psnr_clean, ssim_clean))
         data_mask.save("datasets/removals/mask/{}_{}_{}.jpg".format(iteration, psnr_clean, ssim_clean))
         print("processing {}th".format(iteration))
+        
     print("psnr_mask:{} psnr_clean:{} ssim_mask:{} ssim_clean:{} bce_mask:{}".format(sum(psnrs_mask)/len(psnrs_mask), sum(psnrs_clean)/len(psnrs_clean), sum(ssims_mask)/len(ssims_mask), sum(ssims_clean)/len(ssims_clean), sum(bces_mask)/len(bces_mask)))
         
         

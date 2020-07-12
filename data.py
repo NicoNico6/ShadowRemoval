@@ -7,7 +7,7 @@ import torch.utils.data as data
 
 import torchvision.transforms as transforms
 import cv2
-from PIL import Image
+from PIL import Image, ImageEnhance
 import random
 
 def is_image_file(filename):
@@ -27,7 +27,6 @@ class DatasetFromFolder(data.Dataset):
         
         self.clean_filenames, self.mask_filenames, self.shadow_filenames = self.generate_filenames(data_dir) 
 
-        
         assert experiments in ["ShadowRemoval", "ShadowSyns"]
         
         self.experiments = experiments
@@ -55,18 +54,26 @@ class DatasetFromFolder(data.Dataset):
         for root, dirs, files in os.walk(data_dir):
           names.append(files)
           roots.append(root)
-        #print(roots[1:])
+        print(roots[1:])
         for name in names[-1]:
           if self.training:
-            clean.append(os.path.join(roots[1], name))
-            shadow.append(os.path.join(roots[2], name))
+            clean.append(os.path.join(roots[2], name))
+            shadow.append(os.path.join(roots[1], name))
             mask.append(os.path.join(roots[3], name))
           else:
-            mask.append(os.path.join(roots[1], name))
-            shadow.append(os.path.join(roots[2], name))
-            clean.append(os.path.join(roots[3], name))
+            mask.append(os.path.join(roots[3], name))
+            shadow.append(os.path.join(roots[1], name))
+            clean.append(os.path.join(roots[2], name))
         return clean, mask, shadow
-        
+    
+    def RandomBrightness(self, clean, shadow):
+    
+        m = random.gauss(1, 0.1)
+        clean, shadow = ImageEnhance.Brightness(clean), ImageEnhance.Brightness(shadow)
+        clean, shadow = clean.enhance(m), shadow.enhance(m)
+
+        return clean, shadow
+            
     def RandomResizedCropRotate(self, clean, mask, shadow, th, tw):
 
         w, h = clean.size
@@ -74,7 +81,8 @@ class DatasetFromFolder(data.Dataset):
         m = random.randint(0, 2)
 
         clean, mask, shadow = clean.resize((int(w*(1 + m*0.1)),int(h*(1 + m*0.1))), Image.ANTIALIAS), mask.resize((int(w*(1 + m*0.1)),int(h*(1 + m*0.1))), Image.ANTIALIAS), shadow.resize((int(w*(1 + m*0.1)),int(h*(1 + m*0.1))), Image.ANTIALIAS)  
-
+        
+        clean, shadow = self.RandomBrightness(clean, shadow)
         
         assert (w>=tw and h>=th), 'w:{} < tw:{} or h:{}<th:{}'.format(w,tw,h,th)
 
@@ -99,9 +107,11 @@ class DatasetFromFolder(data.Dataset):
             if self.training:
 
               #clean, mask, shadow = (self.RandomResizedCropRotate(clean, mask, shadow, 256, 256))
-              clean = clean.resize((320, 320), Image.ANTIALIAS)
-              mask = mask.resize((320, 320), Image.ANTIALIAS)
-              shadow = shadow.resize((320, 320), Image.ANTIALIAS)
+              clean = clean.resize((360, 360), Image.ANTIALIAS)
+              mask = mask.resize((360, 360), Image.ANTIALIAS)
+              shadow = shadow.resize((360, 360), Image.ANTIALIAS)
+              clean, mask, shadow = (self.RandomResizedCropRotate(clean, mask, shadow, 320, 320))
+              
             else:
               clean = clean.resize((320, 320), Image.ANTIALIAS)
               mask = mask.resize((320, 320), Image.ANTIALIAS)
@@ -147,14 +157,11 @@ class SynsDataset(data.Dataset):
     def generate_filenames(self, data_dir):
         data = []
         
-        names = []
-        roots = []
-        
-        for root, dirs, files in os.walk(data_dir):
-          names.append(files)
-          roots.append(root)
-        for name in names[-1]:
-          data.append(os.path.join(roots[0], name))
+        for root, _, fnames in sorted(os.walk(data_dir)):
+          for fname in fnames:
+            if is_image_file(fname):
+              path = os.path.join(root, (fname))
+              data.append(path)
           
         return data
         
@@ -183,6 +190,9 @@ class SynsDataset(data.Dataset):
 
         clean = Image.fromarray(cv2.cvtColor(cv2.imread(self.clean_filenames[index]), cv2.COLOR_BGR2RGB))
         masks = [Image.fromarray(cv2.cvtColor(cv2.imread(self.mask_filenames[random.randint(0, len(self.mask_filenames)-1)]), cv2.COLOR_BGR2RGB)) for i in range(self.combination)]
+        
+        
+        clean = clean.resize((500, 500))
         
         w, h = clean.size
         
